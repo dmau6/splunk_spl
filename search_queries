@@ -1,0 +1,196 @@
+#Example uses of SPL language in search queries
+
+#Advanced Rex -- query intended to enumerate and output each raw event to find variations in fields and values used to test the following regex
+index=websphere sourcetype=log4j|rex field=source "/appLogs/WebSphereLogs/[redacted]/Log4J_Logs/(?<log>.*)"
+|eval raw=_raw
+|eval No=1
+|accum No
+|table No, log, raw
+
+#Regex Created for testing then used to create field extractions on search head
+|rex field=raw (?<timestamp>\d{10}\.\d{3})\s(?<bytes>\d+)\s(?<src_ip>\d+.\d+.\d+.\d+)\s(?<http_result>\S+)\s(?<elapsed_time>\d+)\s(?<http_method>\S+)\s(?<url>\S+)\s?.\s(?<server_contact_mode>\S+)\/(?<domain>\S+)\s(?<http_content_type>\S+)\s(?<acltag>\S+)\s\<(?<noidea>.+)\stransaction\-id\=\s(?<transaction_id>\d+).*cookie\=\s\"(?<cookie>\S+)\;\suniv_id\=(?<univ_id>\S+)\;.*user-agent\=\s\"(?<user_agent>[^\"]+).+hierarchy\=\s(?<hierarchy>\w+).+\sclient\-server\-bytes=\s(?<bytes_out>\d+)\,\ssc\-bytes\=\s(?<sc_bytes>\d+)\,\sbandwidth\-avg=\s(?<bandwidth_avg>\S+)\,\sbandwidth\-throttled\=\s\d*\,\ssrc_ip=\s\S+\ssrc_port=\s(?<port>\d+)\,\s\S+\s\S+\sversion=\s(?<version>\d+).*server-header=\s\"(?<server_header>\S+)\"\,\sdest_hostname=\s(?<dest_host>\d+\.\d+\.\d+\.\d+)\,\sdest_port=\s(?<dest_port>\d+)\,\sdest_url=\s(?<dest_url>\S+)\,\sDomain=\s\S+\s\S+\s\S+\smethod\=\s\S+\s\S+\s\S+\s\S+\s\S+\s\S+\s\S+\sreferer\=\s\"(?<referer>\S+)\"\S+\suri=\s(?<uri_2>\S+).*cipher\-info=\s(?<cipher_info>\S+)
+
+#Using SPATH with MVZIP, MVEXPAND
+index=ontap sourcetype=ontap:audit
+| spath output=Data path=Event.EventData.Data
+| spath output=Name path=Event.EventData.Data{@Name}
+| table Data, Name
+| eval x=mvzip(Data, Name)
+| mvexpand x
+| eval x = split(x,",") 
+| eval data=mvindex(x,0)  | eval name=mvindex(x,1)
+
+#Attack surface trends from Crowdstrike using spath, mvexpand, nomv
+index=surface_alerts
+| fields confidence, asset_type, id, ip.ptr, discovery, entity_type, ip.fqdns{},"discovery.path.steps{}.clue", "discovery.path.steps{}.entity_type", "discovery.path.steps{}.entity", "ip.services{}.applications{}.category", ip.location.country_name, ip.location.region_name, "ip.services{}.status"
+| spath discovery.path.steps{}.clue
+| spath discovery.path.steps{}.entity_type
+| spath discovery.path.steps{}.entity
+| spath ip.services{}.applications{}.category
+| spath ip.location.country_name
+| spath ip.location.region_name
+| spath ip.services{}.status
+| spath ip.fqdns{}
+| rename "discovery.path.steps{}.clue" as "Clue", "discovery.path.steps{}.entity_type" as "Type", "discovery.path.steps{}.entity" as "Attack Surface", "ip.services{}.applications{}.category" as "Application Category", "ip.location.country_name" as "Country", "ip.location.region_name" as "State", "ip.services{}.status" as "IP Status", "ip.fqdns{}, discovery.path.steps{}.clue" as discovery_clue
+| table confidence, asset_type, id, ip.ptr, discovery, entity_type, "Type", "Clue", "Attack Surface" ,"Application Category", "Country", "State", "IP Status", "discovery_clue"
+| mvexpand "Clue"
+| mvexpand "Type"
+| mvexpand "Attack Surface"
+| nomv "Clue"
+| nomv "Type"
+| nomv "Attack Surface"
+| table id, "Attack Surface", "Clue", "Type"
+
+#Number of open vulnerabilities by status per host
+index=crowdstrike_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
+| rename falcon_spotlight.* as *
+| eval status=CASE(status="expired", "closed", status="open", "open", status="reopen", "open", status="closed", "closed", 1==1, NULL())
+| fields status
+index=dtec_la_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
+| rename falcon_spotlight.* as *
+| eval status=CASE(status="expired", "closed", status="open", "open", status="reopen", "open", status="closed", "closed", 1==1, NULL())
+| table vulnerability_id, status, cve.base_score, host_info.asset_criticality, host_info.hostname, closed_timestamp, created_timestamp
+| stats count last(status) as status by host_info.hostname, vulnerability_id
+
+#Vulnerability status by base score
+index=crowdstrike_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
+| rename falcon_spotlight.* as *
+| eval status=CASE(status="expired", "closed", status="open", "open", status="reopen", "open", status="closed", "closed", 1==1, NULL())
+| table vulnerability_id, status, cve.base_score, host_info.asset_criticality, host_info.hostname, closed_timestamp, created_timestamp
+| eventstats sum(cve.base_score) as base_score by vulnerability_id, host_info.hostname
+| chart count over status by base_score
+
+#Indicator trends
+index=surface_alerts
+| streamstats latest(last_seen) as last_seen by id
+| eval x=mvzip(clue, mvzip(threat_class, indicator))
+| mvexpand x
+| eval x = split(x,",")
+| eval clue=mvindex(x, 0)
+| eval threat_class=mvindex(x, 1)
+| eval indicator=mvindex(x,2)
+| eval message="The ".clue." was a(n) ".." and with value ".indicator
+| fields message, id
+| rex field=id "e59a6a3d526240208f1dd0b2ece2ca20_(?<id>\S+)"
+| stats values(message) as messages by id
+
+#Threat Class Categorization
+index=surface_alerts
+| streamstats latest(last_seen) as last_seen by id
+| eval x=mvzip(clue, mvzip(threat_class, indicator))
+| mvexpand x
+| eval x = split(x,",")
+| eval clue=mvindex(x, 0)
+| eval threat_class=mvindex(x, 1)
+| eval indicator=mvindex(x,2)
+| eval message="The ".clue." was a(n) ".threat_class." with value ".indicator| rex field=id "[redacted]_(?<correlation>\S+)"| stats values(message) as message by ip.ip_address, indicator
+
+#Regex for crowdstrike vulnerability to calculate risk
+| rex field=falcon_spotlight.cve.vector "CVSS3\.1\/AV\:(?<Attack Vector>\w{1,2})\/AC\:(?<Attack Complexity>\w)\/PR(?<Privileges Required>\w)\/UI\:(?<User Interaction>\w)\/S\:(?<Scope>\w)\/C\:(?<Confidentiality Impact>\w)\/I\:(?<Integrity Impact>\w)\/A(?<Availability Impact>\w)"
+
+#Internet facing alerts
+index==surface_alerts internet_exposure=yes
+| rename discovery.path.steps{}.clue as "domain"
+| rename discovery.path.steps{}.entity as "ioc"
+| eval x=mvzip(domain,ioc)
+| mvexpand x
+| eval y=split(x, ",")
+| eval domain=mvindex(y, 0)
+| eval hint=mvindex(y, 1)
+| eval domain=IF(LIKE(domain, "%DNS%"), "IP is resolved from DNS", domain)
+| eval message="The ".domain.” : ".hint
+| eventstats dc(correlation_id) as number by message
+| rex field=message "The\s(?<category>\S+)[^\:]+\:\s(?<value>[^\"]+)"
+| chart count(number) as total over category by value
+
+#ServiceNow Metrics
+#Triage times per incident
+index=snow sourcetype="snow:incident"
+| fields active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on
+| eval Severity=impact*priority
+| search active=false
+| eval Closed = strptime(dv_sys_updated_on, "%Y-%m-%d %H:%M:%S")
+| eval Opened=strptime(dv_sys_created_on,"%Y-%m-%d %H:%M:%S")
+| eval "total_time"=Closed - Opened
+| convert timeformat="%H hours %m minutes" ctime(total_time)
+| convert timeformat="%a %B %d %H:%M:%S.%N %Y" ctime(Start)
+| eval SLA=strptime(sla_due, "%Y-%m-%d %H:%M:%S")
+| eval "met_sla" = IF(SLA > Closed, "Yes", "No")
+| eval Triage_Closed=IF("met_sal"="Yes", dv_sys_updated_on, "Still in Triage")
+| rename short_description as "Description", active as "Status", "dv_assignment_group" as "Assigned Group", "sla_due" as "Service Level Agreement Triage Time", dv_assigned_to as "Analyst", dv_comments_and_work_notes as "Notes", dv_sys_created_on as "Start", category as Category, number as "Incident ID", "dv_business_service" as "Business Unit", subcategory as Subcategory. "met_sla" as "Met SLA"
+| table "Incident ID", Description, Severity, "Met SLA", "Assigned Group", Analyst, "Business Unit", Start, Notes
+
+#Opened v closed Snow incidents
+index=snow sourcetype="snow:incident"
+| fields active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on
+| table active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on
+| eval severity=impact*priority
+| search active=false
+| eval Closed = strptime(dv_sys_updated_on, "%Y-%m-%d %H:%M:%S")
+| eval Opened=strptime(dv_sys_created_on,"%Y-%m-%d %H:%M:%S")
+| eval "total_time"=Closed - Opened
+| convert timeformat="%H hours %m minutes" ctime(total_time)
+| eval SLA=strptime(sla_due, "%Y-%m-%d %H:%M:%S")
+|eval "met_sla" = IF(SLA > Closed, "Yes", "No")
+| stats count by active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on, met_sla, Closed, Opened, total_time
+
+#%of SLAs met
+index=snow sourcetype="snow:incident"
+| fields active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on
+| table active, state, short_description, dv_assignment_group, sla_due, impact, priority, severity, dv_business_service, category, subcategory, dv_assigned_to, dv_comments_and_work_notes, _time, number, dv_sys_updated_on, dv_sys_created_on
+| eval Severity=impact*priority
+| search active=false
+| eval Closed = strptime(dv_sys_updated_on, "%Y-%m-%d %H:%M:%S")
+| eval Opened=strptime(dv_sys_created_on,"%Y-%m-%d %H:%M:%S")
+| eval "total_time"=Closed - Opened
+| convert timeformat="%H hours %m minutes" ctime(total_time)
+| convert timeformat="%a %B %d %H:%M:%S.%N %Y" ctime(Start)
+| eval SLA=strptime(sla_due, "%Y-%m-%d %H:%M:%S")
+| eval "met_sla" = IF(SLA > Closed, "Yes", "No")
+| eval Triage_Closed=IF("met_sal"="Yes", dv_sys_updated_on, "Still in Triage")
+| rename short_description as "Description", active as "Status", "dv_assignment_group" as "Assigned Group", "sla_due" as "Service Level Agreement Triage Time", dv_assigned_to as "Analyst", dv_comments_and_work_notes as "Notes", dv_sys_created_on as "Start", category as Category, number as "Incident ID", "dv_business_service" as "Business Unit", subcategory as Subcategory. "met_sla" as "Met SLA"
+| table "Incident ID", Description, Severity, "Met SLA", "Assigned Group", Analyst, "Business Unit", Start, Notes
+
+#Azure Alerts
+#Modified properties
+index="azure_ad" sourcetype="azure:aad:audit"
+| spath output=value path=additionalDetails{}.key
+| spath output=action path=additionalDetails{}.value
+| spath output=modified_property path=targetResources{}.modifiedProperties{}.displayName
+| eval modified_properties=mvzip('targetResources{}.modifiedProperties{}.displayName', 'targetResources{}.modifiedProperties{}.newValue', targetResources{}.modifiedProperties{}.oldValue ":"),
+modified_properties=mvmap(modified_properties, json_object(mvindex(split(modified_properties, ":"), 0))), mvindex(split(modified_properties, ":"), 1),  mvindex(split(modified_properties, ":"), 2))),
+modified_properties="[".mvjoin(modif, ",")."]"
+| eval modified_properties=mvzip('modified_properties{}.name', 'modified_properties{}.value', ":"),
+modified_properties=mvmap(modified_properties, json_object(mvindex(split(modified_properties, ":"), 0), mvindex(split(modified_properties, ":"), 1))),
+modified_properties="[".mvjoin(modified_properties, ",")."]"
+| spath input=modified_properties
+
+#Health Alerts
+#Finding the top 20 reporting st 
+index=_internal sourcetype=splunkd source=*license_usage.log type=Usage earliest=-8d@d
+    [search index=_internal sourcetype=splunkd source=*license_usage.log type=Usage
+    | stats sum(b) as bytes by st
+    | sort -bytes
+    | head 25
+    | table st]
+| timechart limit=0 span=1d@d sum(eval(round(b/1024/1024/28672,2))) as "MB" by st
+
+#Percentage of Searches within 24 hours
+index="_audit" sourcetype=audittrail action=search api_et=* api_lt=* | eval Past=tostring(round(api_lt-api_et),"duration") | eval over_under=IF(LIKE(Past, "%+%"), "over_24", "under_24")
+
+#Long Running Searches
+index=_audit action=search (id=* OR search_id=*)|eval user=if(user=="n/a", null(), user)|stats max(total_run_time) as total_run_time first(user) as user by search_id |stats count perc95(total_run_time) median(total_run_time) by user
+
+#Rest API
+#Roles, Mappings, Indexes
+| rest /services/authorization/roles splunk_server=local
+| fields title, srchIndexesAllowed, srchIndexesDefault, imported_roles
+| eval indexes=coalesce(srchIndexesAllowed, srchIndexesDefault)
+| fields title, imported_roles, indexes
+| join left=L right=R WHERE L.title=R.roles
+    [| rest /services/admin/SAML-groups splunk_server=local
+| mvexpand roles
+| rename title as "SAML ActiveDirectory Group"
+| fields roles, "SAML ActiveDirectory Group"]
+| fields - R.roles
+| rename R.* as *, L.* as *
