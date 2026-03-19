@@ -46,7 +46,8 @@ index=crowdstrike_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
 | rename falcon_spotlight.* as *
 | eval status=CASE(status="expired", "closed", status="open", "open", status="reopen", "open", status="closed", "closed", 1==1, NULL())
 | fields status
-index=dtec_la_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
+
+index=crowdstrike_endpoint sourcetype="crowdstrike:spotlight:vulnerability:json"
 | rename falcon_spotlight.* as *
 | eval status=CASE(status="expired", "closed", status="open", "open", status="reopen", "open", status="closed", "closed", 1==1, NULL())
 | table vulnerability_id, status, cve.base_score, host_info.asset_criticality, host_info.hostname, closed_timestamp, created_timestamp
